@@ -1,0 +1,9 @@
+{
+    "display_name": "Clean Copy Text",
+    "loading_order": 100,
+    "requires": [],
+    "author": "User",
+    "version": "1.0.0",
+    "description": "Copies chat to clipboard without <thinking> tags or names.",
+    "js": "index.js"
+}
