@@ -1,59 +1,113 @@
-// Wraps logic to avoid global scope pollution
+// @ts-check
 (function() {
-    const extensionName = "Clean Copy Text";
-    const extensionId = "clean-copy-text";
+    const extensionName = "Clean Copy & Save";
+    const extensionId = "clean-copy-text-pro";
 
-    function cleanAndCopy() {
-        // Access global ST chat array
-        // context.chat is the standard array of message objects
-        const context = SillyTavern.getContext(); 
+    // Default settings
+    const settings = {
+        replaceInvisible: localStorage.getItem(`${extensionId}-replace-inv`) === 'true',
+        saveToFile: localStorage.getItem(`${extensionId}-save-file`) === 'true'
+    };
+
+    /**
+     * Sanitizes filename to prevent OS-level errors
+     * @param {string} name
+     * @returns {string}
+     */
+    function sanitizeFilename(name) {
+        return name.replace(/\s+/g, '_').replace(/[<>:"/\\|?*]/g, '');
+    }
+
+    /**
+     * Generates formatted timestamp YYYY-MM-DD-HH-mm-ss
+     * @returns {string}
+     */
+    function getTimestamp() {
+        const now = new Date();
+        const pad = (n) => n.toString().padStart(2, '0');
+        return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+    }
+
+    /**
+     * Core logic for cleaning and exporting chat
+     */
+    async function processChat() {
+        const context = SillyTavern.getContext();
         if (!context.chat || context.chat.length === 0) {
             toastr.warning("Chat is empty", extensionName);
             return;
         }
 
-        // 1. Map messages to get text content
-        // 2. Filter out system messages if needed (optional)
-        // 3. Regex replace <thinking> tags
+        // Processing chat messages
         let fullText = context.chat
             .map(msg => {
-                // Skip system/hidden messages if desired, otherwise keep all
-                if (msg.is_system) return ""; 
-                
+                if (msg.is_system) return "";
+
                 let text = msg.mes;
-                
-                // Regex to remove <thinking>...</thinking> including newlines
-                // [\s\S] matches any character including newline
+
+                // 1. Remove <thinking> tags and content
                 text = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "");
-                
-                // Remove extra whitespace left behind
+
+                // 2. Replace invisible Hangul Filler (U+3164) if enabled
+                if (settings.replaceInvisible) {
+                    text = text.replace(/\u3164/g, " ");
+                }
+
                 return text.trim();
             })
-            .filter(text => text.length > 0) // Remove empty entries
-            .join("\n\n"); // Separator between messages
+            .filter(text => text.length > 0)
+            .join("\n\n");
 
-        // Clipboard API
-        navigator.clipboard.writeText(fullText).then(() => {
-            toastr.success("Copied clean text to clipboard!", extensionName);
-        }).catch(err => {
-            console.error("Copy failed", err);
-            toastr.error("Failed to copy text. Check console.", extensionName);
-        });
-    }
-
-    // Register a Slash Command for quick access (/copyclean)
-    function registerCommand() {
-        if (window.slash_commands) {
-            window.slash_commands['copyclean'] = {
-                callback: cleanAndCopy,
-                description: "Copy chat log without thinking tags",
-                returns: "string" // suppress output in chat
-            };
+        if (settings.saveToFile) {
+            exportToFile(fullText, context);
+        } else {
+            copyToClipboard(fullText);
         }
     }
 
-    // Add settings button to Extensions Menu
-    // This is the UI trigger for mobile users
+    /**
+     * Trigger file download
+     */
+    function exportToFile(text, context) {
+        try {
+            const charName = context.characters[context.character_id]?.name || "Unknown_Char";
+            const fileName = `${getTimestamp()}-${sanitizeFilename(charName)}.txt`;
+
+            const blob = new Blob([text], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+
+            toastr.success(`Saved to ${fileName}`, extensionName);
+        } catch (err) {
+            console.error("File save failed", err);
+            toastr.error("Failed to save file", extensionName);
+        }
+    }
+
+    /**
+     * Copy to system clipboard
+     */
+    async function copyToClipboard(text) {
+        try {
+            await navigator.clipboard.writeText(text);
+            toastr.success("Copied clean text to clipboard!", extensionName);
+        } catch (err) {
+            console.error("Copy failed", err);
+            toastr.error("Failed to copy. Check console.", extensionName);
+        }
+    }
+
+    /**
+     * UI Injection and Event Binding
+     */
     $(document).ready(function() {
         const settingsHtml = `
             <div id="${extensionId}-settings" class="extension_settings">
@@ -63,9 +117,19 @@
                         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                     </div>
                     <div class="inline-drawer-content">
-                        <div class="styled_button_holder">
-                            <div id="clean-copy-btn" class="menu_button">
-                                <i class="fa-solid fa-copy"></i> Copy Clean Text
+                        <div class="flex-container">
+                            <label class="checkbox_label">
+                                <input type="checkbox" id="${extensionId}-check-inv" ${settings.replaceInvisible ? 'checked' : ''}>
+                                Replace "ㅤ" (U+3164) with space
+                            </label>
+                            <label class="checkbox_label">
+                                <input type="checkbox" id="${extensionId}-check-file" ${settings.saveToFile ? 'checked' : ''}>
+                                Save to file instead of copy
+                            </label>
+                        </div>
+                        <div class="styled_button_holder" style="margin-top: 10px;">
+                            <div id="${extensionId}-run-btn" class="menu_button">
+                                <i class="fa-solid fa-file-export"></i> Run Clean Export
                             </div>
                         </div>
                     </div>
@@ -73,14 +137,29 @@
             </div>
         `;
 
-        // Inject UI
         $("#extensions_settings").append(settingsHtml);
 
-        // Bind click event
-        $("#clean-copy-btn").click(function() {
-            cleanAndCopy();
+        // Event: Run
+        $(`#${extensionId}-run-btn`).click(() => processChat());
+
+        // Event: Save Settings
+        $(`#${extensionId}-check-inv`).change(function() {
+            settings.replaceInvisible = $(this).is(':checked');
+            localStorage.setItem(`${extensionId}-replace-inv`, settings.replaceInvisible);
         });
 
-        registerCommand();
+        $(`#${extensionId}-check-file`).change(function() {
+            settings.saveToFile = $(this).is(':checked');
+            localStorage.setItem(`${extensionId}-save-file`, settings.saveToFile);
+        });
+
+        // Register Slash Command
+        if (window.slash_commands) {
+            window.slash_commands['copyclean'] = {
+                callback: processChat,
+                description: "Clean chat and export (based on settings)",
+                returns: "string"
+            };
+        }
     });
 })();
