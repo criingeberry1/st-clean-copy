@@ -3,25 +3,19 @@
     const extensionName = "Clean Copy & Save";
     const extensionId = "clean-copy-text-pro";
 
-    // Default settings
     const settings = {
         replaceInvisible: localStorage.getItem(`${extensionId}-replace-inv`) === 'true',
         saveToFile: localStorage.getItem(`${extensionId}-save-file`) === 'true'
     };
 
-    /**
-     * Sanitizes filename to prevent OS-level errors
-     * @param {string} name
-     * @returns {string}
-     */
     function sanitizeFilename(name) {
-        return name.replace(/\s+/g, '_').replace(/[<>:"/\\|?*]/g, '');
+        // Удаляем пробелы, спецсимволы и ограничиваем длину для стабильности FS
+        return name
+            .replace(/\s+/g, '_')
+            .replace(/[<>:"/\\|?*]/g, '')
+            .substring(0, 50);
     }
 
-    /**
-     * Generates formatted timestamp YYYY-MM-DD-HH-mm-ss
-     * @returns {string}
-     */
     function getTimestamp() {
         const now = new Date();
         const pad = (n) => n.toString().padStart(2, '0');
@@ -29,8 +23,29 @@
     }
 
     /**
-     * Core logic for cleaning and exporting chat
+     * Attempts to resolve the most accurate name for the chat
      */
+    function resolveChatName(context) {
+        // 1. Пытаемся взять имя текущего персонажа
+        if (context.character_id !== undefined && context.characters && context.characters[context.character_id]) {
+            return context.characters[context.character_id].name;
+        }
+
+        // 2. Если это группа, ищем имя группы
+        if (context.groupId && context.groups) {
+            const currentGroup = context.groups.find(g => g.id === context.groupId);
+            if (currentGroup) return currentGroup.name;
+        }
+
+        // 3. Фолбэк: берем имя из последнего сообщения в чате (если это не пользователь)
+        if (context.chat && context.chat.length > 0) {
+            const lastMsg = context.chat[context.chat.length - 1];
+            if (lastMsg && !lastMsg.is_user && lastMsg.n) return lastMsg.n;
+        }
+
+        return "Chat";
+    }
+
     async function processChat() {
         const context = SillyTavern.getContext();
         if (!context.chat || context.chat.length === 0) {
@@ -38,21 +53,14 @@
             return;
         }
 
-        // Processing chat messages
         let fullText = context.chat
             .map(msg => {
                 if (msg.is_system) return "";
-
                 let text = msg.mes;
-
-                // 1. Remove <thinking> tags and content
                 text = text.replace(/<thinking>[\s\S]*?<\/thinking>/gi, "");
-
-                // 2. Replace invisible Hangul Filler (U+3164) if enabled
                 if (settings.replaceInvisible) {
                     text = text.replace(/\u3164/g, " ");
                 }
-
                 return text.trim();
             })
             .filter(text => text.length > 0)
@@ -65,15 +73,12 @@
         }
     }
 
-    /**
-     * Trigger file download
-     */
     function exportToFile(text, context) {
         try {
-            const charName = context.characters[context.character_id]?.name || "Unknown_Char";
-            const fileName = `${getTimestamp()}-${sanitizeFilename(charName)}.txt`;
+            const rawName = resolveChatName(context);
+            const fileName = `${getTimestamp()}-${sanitizeFilename(rawName)}.txt`;
 
-            const blob = new Blob([text], { type: 'text/plain' });
+            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
 
@@ -82,32 +87,28 @@
             document.body.appendChild(a);
             a.click();
 
-            window.URL.revokeObjectURL(url);
-            document.body.removeChild(a);
+            // Чистим за собой
+            setTimeout(() => {
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+            }, 100);
 
-            toastr.success(`Saved to ${fileName}`, extensionName);
+            toastr.success(`Saved as ${fileName}`, extensionName);
         } catch (err) {
-            console.error("File save failed", err);
+            console.error("Export failed:", err);
             toastr.error("Failed to save file", extensionName);
         }
     }
 
-    /**
-     * Copy to system clipboard
-     */
     async function copyToClipboard(text) {
         try {
             await navigator.clipboard.writeText(text);
-            toastr.success("Copied clean text to clipboard!", extensionName);
+            toastr.success("Copied to clipboard!", extensionName);
         } catch (err) {
-            console.error("Copy failed", err);
-            toastr.error("Failed to copy. Check console.", extensionName);
+            toastr.error("Copy failed", extensionName);
         }
     }
 
-    /**
-     * UI Injection and Event Binding
-     */
     $(document).ready(function() {
         const settingsHtml = `
             <div id="${extensionId}-settings" class="extension_settings">
@@ -139,10 +140,8 @@
 
         $("#extensions_settings").append(settingsHtml);
 
-        // Event: Run
         $(`#${extensionId}-run-btn`).click(() => processChat());
 
-        // Event: Save Settings
         $(`#${extensionId}-check-inv`).change(function() {
             settings.replaceInvisible = $(this).is(':checked');
             localStorage.setItem(`${extensionId}-replace-inv`, settings.replaceInvisible);
@@ -153,11 +152,10 @@
             localStorage.setItem(`${extensionId}-save-file`, settings.saveToFile);
         });
 
-        // Register Slash Command
         if (window.slash_commands) {
             window.slash_commands['copyclean'] = {
                 callback: processChat,
-                description: "Clean chat and export (based on settings)",
+                description: "Clean chat and export",
                 returns: "string"
             };
         }
